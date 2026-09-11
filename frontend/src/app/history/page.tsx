@@ -297,98 +297,73 @@ export default function HistoryPage() {
   // DELETE TEST RUN
   // -------------------------------------------------------
 
-  async function deleteGame(
-    gameId: number
-  ) {
-    const game =
-      games.find(
-        (item) =>
-          item.id === gameId
-      );
+  async function deleteGame(gameId: number) {
+  const game = games.find(
+    (item) => item.id === gameId
+  );
 
-    const gameDescription =
-      game?.placement != null
-        ? `Game #${gameId} — Placement #${game.placement}`
-        : `Game #${gameId}`;
+  const gameDescription =
+    game?.placement != null
+      ? `Game #${gameId} — Placement #${game.placement}`
+      : `Game #${gameId}`;
 
-    const confirmed =
-      window.confirm(
-        `Delete ${gameDescription} permanently?\n\n` +
-          `This removes the local Decision Lab test run, ` +
-          `including its events, decisions, and Riot snapshot.\n\n` +
-          `It does NOT delete the actual Riot match.\n\n` +
-          `This cannot be undone.`
-      );
+  const confirmed = window.confirm(
+    `Delete ${gameDescription} permanently?\n\n` +
+      `This removes the local Decision Lab test run, ` +
+      `including its events, decisions, and Riot snapshot.\n\n` +
+      `It does NOT delete the actual Riot match.\n\n` +
+      `This cannot be undone.`
+  );
 
-    if (
-      !confirmed
-    ) {
-      return;
-    }
-
-    setDeletingGameId(
-      gameId
-    );
-
-    setMessage("");
-
-    try {
-      const response =
-        await fetch(
-          `${API_URL}/api/games/${gameId}`,
-          {
-            method: "DELETE",
-          }
-        );
-
-      const data =
-        await response.json();
-
-      if (
-        !response.ok
-      ) {
-        throw new Error(
-          getErrorMessage(
-            data,
-            "Could not delete game."
-          )
-        );
-      }
-
-      /*
-       * Remove it immediately from the UI
-       * without requiring another fetch.
-       */
-
-      setGames(
-        (
-          currentGames
-        ) =>
-          currentGames.filter(
-            (item) =>
-              item.id !==
-              gameId
-          )
-      );
-
-      setMessage(
-        `Game #${gameId} deleted successfully.`
-      );
-    } catch (
-      error
-    ) {
-      setMessage(
-        error instanceof Error
-          ? error.message
-          : "Could not delete game."
-      );
-    } finally {
-      setDeletingGameId(
-        null
-      );
-    }
+  if (!confirmed) {
+    return;
   }
 
+  setDeletingGameId(gameId);
+  setMessage("");
+
+  try {
+    const response = await fetch(
+      `${API_URL}/api/games/${gameId}`,
+      {
+        method: "DELETE",
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        getErrorMessage(
+          data,
+          "Could not delete game."
+        )
+      );
+    }
+
+    // Immediately remove it visually
+    setGames((currentGames) =>
+      currentGames.filter(
+        (item) => item.id !== gameId
+      )
+    );
+
+    // Then reload from the backend/database
+    await loadHistory();
+
+    setMessage(
+      `Game #${gameId} deleted successfully.`
+    );
+  } catch (error) {
+    setMessage(
+      error instanceof Error
+        ? error.message
+        : "Could not delete game."
+    );
+  } finally {
+    setDeletingGameId(null);
+  }
+}
 
   return (
     <main className="min-h-screen bg-zinc-950 px-4 py-8 text-zinc-100">
