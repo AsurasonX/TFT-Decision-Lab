@@ -1,125 +1,28 @@
 "use client";
 
 import Link from "next/link";
-
-import {
-  useEffect,
-  useState
-} from "react";
-
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
+const INITIAL_STRATEGIES = [
+  "WIN_STREAK",
+  "LOSE_STREAK",
+  "FLEXIBLE",
+  "EXPERIMENT",
+] as const;
 
-type Game = {
-  id: number;
-  game_name: string;
-  tag_line: string;
-  initial_strategy: string;
-  status: string;
-  riot_match_id: string | null;
-  placement: number | null;
-  top4: boolean | null;
-  win: boolean | null;
-  patch: string | null;
-};
-
-
-type Decision = {
-  id: number;
-  sequence_order: number;
-  decision_type: string;
-  notes: string | null;
-};
-
-
-type GameEvent = {
-  id: number;
-  stage: number;
-  round: number;
-  event_type: string;
-  hp: number | null;
-  gold: number | null;
-  level: number | null;
-  streak_type: string | null;
-  streak_length: number | null;
-};
-
-
-type TimelineEntry = {
-  event: GameEvent;
-  decisions: Decision[];
-};
-
-
-type TimelineResponse = {
-  game: Game;
-  timeline: TimelineEntry[];
-};
-
-
-type RiotUnit = {
-  character_id: string | null;
-  tier: number | null;
-  items: Array<string | number>;
-};
-
-
-type RiotTrait = {
-  name: string | null;
-  num_units: number | null;
-  style: number | null;
-  tier_current: number | null;
-};
-
-
-type RiotMatch = {
-  match_id: string;
-  game_datetime: number | null;
-  placement: number;
-  top4: boolean;
-  win: boolean;
-  level: number | null;
-  last_round: number | null;
-  game_version: string | null;
-  units: RiotUnit[];
-  traits: RiotTrait[];
-};
-
-
-const strategies = [
-  {
-    value: "WIN_STREAK",
-    label: "🔥 Win Streak"
-  },
-  {
-    value: "LOSE_STREAK",
-    label: "💰 Lose Streak"
-  },
-  {
-    value: "FLEXIBLE",
-    label: "🔄 Flexible"
-  },
-  {
-    value: "EXPERIMENT",
-    label: "🧪 Experiment"
-  }
-];
-
-
-const eventTypes = [
+const EVENT_TYPES = [
   "LOSE_STREAK_BROKEN",
   "WIN_STREAK_BROKEN",
   "UNEXPECTED_WIN",
   "UNEXPECTED_LOSS",
   "LOW_HP",
-  "STAGE_TRANSITION"
-];
+  "STAGE_TRANSITION",
+] as const;
 
-
-const decisionTypes = [
+const DECISION_TYPES = [
   "MAKE_ECON",
   "STRENGTHEN_BOARD",
   "WEAKEN_BOARD",
@@ -129,1886 +32,1711 @@ const decisionTypes = [
   "SLAM_ITEM",
   "HOLD_UNITS",
   "SELL_UNITS",
-  "NO_CHANGE"
-];
+  "NO_CHANGE",
+] as const;
 
+const STAGES = [2, 3, 4, 5, 6];
+const ROUNDS = [1, 2, 3, 4, 5, 6, 7];
 
-const roundsByStage: Record<
-  number,
-  number[]
-> = {
-  2: [1, 2, 3, 4, 5, 6, 7],
-  3: [1, 2, 3, 4, 5, 6, 7],
-  4: [1, 2, 3, 4, 5, 6, 7],
-  5: [1, 2, 3, 4, 5, 6, 7],
-  6: [1, 2, 3, 4, 5, 6, 7]
+type Game = {
+  id: number;
+  game_name: string;
+  tag_line: string;
+  riot_match_id?: string | null;
+  initial_strategy: string;
+  status: string;
+  started_at?: string;
+  completed_at?: string | null;
+  placement?: number | null;
+  top4?: boolean | null;
+  win?: boolean | null;
+  patch?: string | null;
 };
 
+type GameEvent = {
+  id: number;
+  game_id: number;
+  stage: number;
+  round: number;
+  event_type: string;
+  hp?: number | null;
+  gold?: number | null;
+  level?: number | null;
+  streak_type?: string | null;
+  streak_length?: number | null;
+  created_at?: string;
+};
 
-function prettyName(
-  value: string
-) {
+type Decision = {
+  id: number;
+  game_id: number;
+  event_id: number;
+  sequence_order: number;
+  decision_type: string;
+  gold_before?: number | null;
+  gold_after?: number | null;
+  level_before?: number | null;
+  level_after?: number | null;
+  notes?: string | null;
+  created_at?: string;
+};
 
+type TimelineEntry = {
+  event: GameEvent;
+  decisions: Decision[];
+};
+
+type TimelineResponse = {
+  game?: Game;
+  timeline?: TimelineEntry[];
+  entries?: TimelineEntry[];
+};
+
+type RiotUnit = {
+  character_id?: string;
+  name?: string;
+  rarity?: number;
+  tier?: number;
+  itemNames?: string[];
+  item_names?: string[];
+};
+
+type RiotTrait = {
+  name?: string;
+  num_units?: number;
+  style?: number;
+  tier_current?: number;
+  tier_total?: number;
+};
+
+type RiotMatch = {
+  match_id?: string;
+  game_datetime?: number;
+  placement?: number | null;
+  top4?: boolean | null;
+  win?: boolean | null;
+  level?: number | null;
+  last_round?: number | null;
+  game_version?: string | null;
+  units?: RiotUnit[];
+  traits?: RiotTrait[];
+};
+
+function displayLabel(value: string) {
   return value
-    .replaceAll(
-      "_",
-      " "
-    )
     .toLowerCase()
-    .replace(
-      /\b\w/g,
-      letter =>
-        letter.toUpperCase()
-    );
+    .split("_")
+    .map(
+      (word) =>
+        word.charAt(0).toUpperCase() + word.slice(1)
+    )
+    .join(" ");
 }
 
-
-function optionalNumber(
-  value: string
-): number | null {
-
+function getErrorMessage(data: unknown, fallback: string) {
   if (
-    value.trim() === ""
+    typeof data === "object" &&
+    data !== null &&
+    "detail" in data
   ) {
+    const detail = (
+      data as {
+        detail?: unknown;
+      }
+    ).detail;
 
-    return null;
+    if (typeof detail === "string") {
+      return detail;
+    }
+
+    if (
+      typeof detail === "object" &&
+      detail !== null &&
+      "message" in detail
+    ) {
+      const message = (
+        detail as {
+          message?: unknown;
+        }
+      ).message;
+
+      if (typeof message === "string") {
+        return message;
+      }
+    }
+
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallback;
+    }
   }
 
-
-  const result =
-    Number(value);
-
-
-  return Number.isNaN(
-    result
-  )
-    ? null
-    : result;
+  return fallback;
 }
-
 
 export default function Home() {
+  const [gameName, setGameName] = useState("");
+  const [tagLine, setTagLine] = useState("");
 
-  const [
-    gameName,
-    setGameName
-  ] = useState("");
-
-
-  const [
-    tagLine,
-    setTagLine
-  ] = useState("JP1");
-
-
-  const [
-    gameId,
-    setGameId
-  ] = useState<number | null>(
+  const [gameId, setGameId] = useState<number | null>(
     null
   );
 
+  const [game, setGame] = useState<Game | null>(null);
 
-  const [
-    game,
-    setGame
-  ] = useState<Game | null>(
-    null
+  const [stage, setStage] = useState(2);
+  const [round, setRound] = useState(1);
+
+  const [hp, setHp] = useState("");
+  const [gold, setGold] = useState("");
+  const [level, setLevel] = useState("");
+
+  const [streakType, setStreakType] = useState("");
+  const [streakLength, setStreakLength] =
+    useState("");
+
+  const [currentEventId, setCurrentEventId] =
+    useState<number | null>(null);
+
+  const [currentEventType, setCurrentEventType] =
+    useState<string | null>(null);
+
+  const [notes, setNotes] = useState("");
+
+  const [timeline, setTimeline] = useState<
+    TimelineEntry[]
+  >([]);
+
+  const [riotMatch, setRiotMatch] =
+    useState<RiotMatch | null>(null);
+
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  /*
+   * This ref protects against extremely fast double-clicks
+   * before React has time to re-render the disabled button.
+   */
+  const pendingDecisionKeys = useRef<Set<string>>(
+    new Set()
   );
 
-
-  const [
-    riotMatch,
-    setRiotMatch
-  ] = useState<RiotMatch | null>(
-    null
-  );
-
-
-  const [
-    timeline,
-    setTimeline
-  ] = useState<TimelineEntry[]>(
-    []
-  );
-
-
-  const [
-    currentEventId,
-    setCurrentEventId
-  ] = useState<number | null>(
-    null
-  );
-
-
-  const [
-    stage,
-    setStage
-  ] = useState("2");
-
-
-  const [
-    round,
-    setRound
-  ] = useState("1");
-
-
-  const [
-    hp,
-    setHp
-  ] = useState("");
-
-
-  const [
-    gold,
-    setGold
-  ] = useState("");
-
-
-  const [
-    level,
-    setLevel
-  ] = useState("");
-
-
-  const [
-    streakLength,
-    setStreakLength
-  ] = useState("");
-
-
-  const [
-    notes,
-    setNotes
-  ] = useState("");
-
-
-  const [
-    message,
-    setMessage
-  ] = useState("");
-
-
-  const [
-    loading,
-    setLoading
-  ] = useState(false);
-
-
+  /*
+   * Restore saved Riot ID when the page loads.
+   */
   useEffect(() => {
-
     const savedGameName =
-      localStorage.getItem(
-        "tft_game_name"
-      );
-
+      localStorage.getItem("tft_game_name");
 
     const savedTagLine =
-      localStorage.getItem(
-        "tft_tag_line"
-      );
-
+      localStorage.getItem("tft_tag_line");
 
     if (savedGameName) {
-
-      setGameName(
-        savedGameName
-      );
+      setGameName(savedGameName);
     }
-
 
     if (savedTagLine) {
-
-      setTagLine(
-        savedTagLine
-      );
+      setTagLine(savedTagLine);
     }
-
   }, []);
 
-
-  async function loadTimeline(
-    targetGameId: number
-  ) {
-
-    try {
-
-      const response =
-        await fetch(
-          `${API_URL}/api/games/${targetGameId}/timeline`
-        );
-
-
-      if (!response.ok) {
-        return;
-      }
-
-
-      const data:
-        TimelineResponse =
-          await response.json();
-
-
-      setGame(
-        data.game
+  /*
+   * Save Riot ID automatically.
+   */
+  useEffect(() => {
+    if (gameName.trim()) {
+      localStorage.setItem(
+        "tft_game_name",
+        gameName.trim()
       );
-
-
-      setTimeline(
-        data.timeline
-      );
-
-    } catch {
-
-      // Ignore temporary network error.
-
     }
-  }
+  }, [gameName]);
 
-
-  async function startGame(
-    strategy: string
-  ) {
-
-    if (
-      !gameName.trim()
-    ) {
-
-      setMessage(
-        "Enter your Riot game name."
+  useEffect(() => {
+    if (tagLine.trim()) {
+      localStorage.setItem(
+        "tft_tag_line",
+        tagLine.trim()
       );
-
-      return;
     }
+  }, [tagLine]);
 
+  /*
+   * Find all decisions already logged during the
+   * currently selected Stage + Round.
+   *
+   * Example:
+   *
+   * Stage 2-5
+   * MAKE_ECON
+   *
+   * MAKE_ECON becomes disabled even if another event
+   * exists at Stage 2-5.
+   */
+  const decisionsLoggedThisPhase = useMemo(() => {
+    const logged = new Set<string>();
 
-    if (
-      !tagLine.trim()
-    ) {
-
-      setMessage(
-        "Enter your Riot tag line."
-      );
-
-      return;
-    }
-
-
-    localStorage.setItem(
-      "tft_game_name",
-      gameName.trim()
-    );
-
-
-    localStorage.setItem(
-      "tft_tag_line",
-      tagLine.trim()
-    );
-
-
-    setLoading(true);
-    setMessage("");
-
-
-    try {
-
-      const response =
-        await fetch(
-          `${API_URL}/api/games/start`,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json"
-            },
-
-            body: JSON.stringify({
-
-              game_name:
-                gameName.trim(),
-
-              tag_line:
-                tagLine.trim(),
-
-              initial_strategy:
-                strategy
-            })
-          }
-        );
-
-
-      const data =
-        await response.json();
-
-
+    for (const entry of timeline) {
       if (
-        response.status === 409 &&
-        data?.detail?.game_id
+        entry.event.stage === stage &&
+        entry.event.round === round
       ) {
-
-        const existingId:
-          number =
-            data.detail.game_id;
-
-
-        setGameId(
-          existingId
-        );
-
-
-        setRiotMatch(
-          null
-        );
-
-
-        setCurrentEventId(
-          null
-        );
-
-
-        await loadTimeline(
-          existingId
-        );
-
-
-        setMessage(
-          `Resumed Game #${existingId}`
-        );
-
-
-        return;
+        for (const decision of entry.decisions) {
+          logged.add(decision.decision_type);
+        }
       }
-
-
-      if (!response.ok) {
-
-        throw new Error(
-
-          typeof data.detail ===
-          "string"
-
-            ? data.detail
-
-            : JSON.stringify(
-                data.detail ??
-                data
-              )
-        );
-      }
-
-
-      setGameId(
-        data.id
-      );
-
-
-      setGame(
-        data
-      );
-
-
-      setTimeline(
-        []
-      );
-
-
-      setRiotMatch(
-        null
-      );
-
-
-      setCurrentEventId(
-        null
-      );
-
-
-      setStage("2");
-      setRound("1");
-      setHp("");
-      setGold("");
-      setLevel("");
-      setStreakLength("");
-      setNotes("");
-
-
-      setMessage(
-        `Game #${data.id} started`
-      );
-
-
-    } catch (error) {
-
-      setMessage(
-
-        error instanceof Error
-
-          ? error.message
-
-          : "Could not start game."
-      );
-
-
-    } finally {
-
-      setLoading(false);
-    }
-  }
-
-
-  async function resumeActiveGame() {
-
-    if (
-      !gameName.trim() ||
-      !tagLine.trim()
-    ) {
-
-      setMessage(
-        "Enter your Riot ID first."
-      );
-
-      return;
     }
 
+    return logged;
+  }, [timeline, stage, round]);
 
-    localStorage.setItem(
-      "tft_game_name",
-      gameName.trim()
-    );
-
-
-    localStorage.setItem(
-      "tft_tag_line",
-      tagLine.trim()
-    );
-
-
-    setLoading(true);
-    setMessage("");
-
-
+  async function loadTimeline(targetGameId: number) {
     try {
+      const response = await fetch(
+        `${API_URL}/api/games/${targetGameId}/timeline`
+      );
 
-      const name =
-        encodeURIComponent(
-          gameName.trim()
-        );
-
-
-      const tag =
-        encodeURIComponent(
-          tagLine.trim()
-        );
-
-
-      const response =
-        await fetch(
-          `${API_URL}/api/games/active/${name}/${tag}`
-        );
-
-
-      if (!response.ok) {
-
-        throw new Error(
-          "Could not check active game."
-        );
-      }
-
-
-      const data =
+      const data: TimelineResponse =
         await response.json();
 
-
-      if (!data.game) {
-
-        setMessage(
-          "No active game found."
-        );
-
-        return;
-      }
-
-
-      const resumedGame:
-        Game =
-          data.game;
-
-
-      setGameId(
-        resumedGame.id
-      );
-
-
-      setGame(
-        resumedGame
-      );
-
-
-      setRiotMatch(
-        null
-      );
-
-
-      setCurrentEventId(
-        null
-      );
-
-
-      await loadTimeline(
-        resumedGame.id
-      );
-
-
-      setMessage(
-        `Resumed Game #${resumedGame.id}`
-      );
-
-
-    } catch (error) {
-
-      setMessage(
-
-        error instanceof Error
-
-          ? error.message
-
-          : "Could not resume game."
-      );
-
-
-    } finally {
-
-      setLoading(false);
-    }
-  }
-
-
-  async function createEvent(
-    eventType: string
-  ) {
-
-    if (
-      gameId === null
-    ) {
-
-      setMessage(
-        "No active game."
-      );
-
-      return;
-    }
-
-
-    setLoading(true);
-    setMessage("");
-
-
-    try {
-
-      const response =
-        await fetch(
-          `${API_URL}/api/games/${gameId}/events`,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json"
-            },
-
-            body: JSON.stringify({
-
-              stage:
-                Number(stage),
-
-              round:
-                Number(round),
-
-              event_type:
-                eventType,
-
-              hp:
-                optionalNumber(hp),
-
-              gold:
-                optionalNumber(gold),
-
-              level:
-                optionalNumber(level),
-
-              streak_type:
-                eventType ===
-                "LOSE_STREAK_BROKEN"
-
-                  ? "LOSE"
-
-                  : eventType ===
-                    "WIN_STREAK_BROKEN"
-
-                  ? "WIN"
-
-                  : null,
-
-              streak_length:
-                optionalNumber(
-                  streakLength
-                )
-            })
-          }
-        );
-
-
-      const data =
-        await response.json();
-
-
-      if (
-        response.status === 409 &&
-        data?.detail?.event_id
-      ) {
-
-        setCurrentEventId(
-          data.detail.event_id
-        );
-
-
-        setMessage(
-          "This event already exists. Continue adding decisions."
-        );
-
-
-        await loadTimeline(
-          gameId
-        );
-
-
-        return;
-      }
-
-
       if (!response.ok) {
-
         throw new Error(
-
-          typeof data.detail ===
-          "string"
-
-            ? data.detail
-
-            : JSON.stringify(
-                data.detail ??
-                data
-              )
+          getErrorMessage(
+            data,
+            "Could not load timeline."
+          )
         );
       }
-
-
-      setCurrentEventId(
-        data.id
-      );
-
-
-      setMessage(
-        `${prettyName(
-          eventType
-        )} recorded. Choose your response.`
-      );
-
-
-      await loadTimeline(
-        gameId
-      );
-
-
-    } catch (error) {
-
-      setMessage(
-
-        error instanceof Error
-
-          ? error.message
-
-          : "Could not record event."
-      );
-
-
-    } finally {
-
-      setLoading(false);
-    }
-  }
-
-
-  async function createDecision(
-    decisionType: string
-  ) {
-
-    if (
-      gameId === null
-    ) {
-
-      setMessage(
-        "No active game."
-      );
-
-      return;
-    }
-
-
-    if (
-      currentEventId === null
-    ) {
-
-      setMessage(
-        "Choose what happened first."
-      );
-
-      return;
-    }
-
-
-    setLoading(true);
-    setMessage("");
-
-
-    try {
-
-      const response =
-        await fetch(
-          `${API_URL}/api/events/${currentEventId}/decisions`,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json"
-            },
-
-            body: JSON.stringify({
-
-              decision_type:
-                decisionType,
-
-              gold_before:
-                optionalNumber(gold),
-
-              gold_after:
-                null,
-
-              level_before:
-                optionalNumber(level),
-
-              level_after:
-                null,
-
-              notes:
-                notes.trim() === ""
-
-                  ? null
-
-                  : notes.trim()
-            })
-          }
-        );
-
-
-      const data =
-        await response.json();
-
-
-      if (!response.ok) {
-
-        throw new Error(
-
-          typeof data.detail ===
-          "string"
-
-            ? data.detail
-
-            : JSON.stringify(
-                data.detail ??
-                data
-              )
-        );
-      }
-
-
-      setNotes("");
-
-
-      setMessage(
-        `${prettyName(
-          decisionType
-        )} saved as Decision #${data.sequence_order}`
-      );
-
-
-      await loadTimeline(
-        gameId
-      );
-
-
-    } catch (error) {
-
-      setMessage(
-
-        error instanceof Error
-
-          ? error.message
-
-          : "Could not save decision."
-      );
-
-
-    } finally {
-
-      setLoading(false);
-    }
-  }
-
-
-  async function syncRiotResult() {
-
-    if (
-      gameId === null
-    ) {
-
-      setMessage(
-        "No active game."
-      );
-
-      return;
-    }
-
-
-    setLoading(true);
-    setMessage("");
-
-
-    try {
-
-      const response =
-        await fetch(
-          `${API_URL}/api/games/${gameId}/sync-riot`,
-          {
-            method: "POST"
-          }
-        );
-
-
-      const data =
-        await response.json();
-
-
-      if (!response.ok) {
-
-        throw new Error(
-
-          typeof data.detail ===
-          "string"
-
-            ? data.detail
-
-            : JSON.stringify(
-                data.detail ??
-                data
-              )
-        );
-      }
-
 
       if (data.game) {
-
-        setGame(
-          data.game
-        );
+        setGame(data.game);
       }
 
+      setTimeline(
+        data.timeline ?? data.entries ?? []
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not load timeline."
+      );
+    }
+  }
 
-      if (data.riot_match) {
+  async function startGame(
+    initialStrategy: string
+  ) {
+    if (!gameName.trim() || !tagLine.trim()) {
+      setMessage(
+        "Enter your Riot game name and tag line first."
+      );
+      return;
+    }
 
-        setRiotMatch(
-          data.riot_match
-        );
-      }
+    setLoading(true);
+    setMessage("");
 
-
-      await loadTimeline(
-        gameId
+    try {
+      const response = await fetch(
+        `${API_URL}/api/games/start`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            game_name: gameName.trim(),
+            tag_line: tagLine.trim(),
+            initial_strategy: initialStrategy,
+          }),
+        }
       );
 
+      const data = await response.json();
 
-      const placement =
-        data?.game?.placement;
+      /*
+       * Backend may return 409 when an active
+       * session already exists.
+       */
+      if (response.status === 409) {
+        const existingId =
+          data?.detail?.game_id ??
+          data?.game_id ??
+          null;
 
+        if (typeof existingId === "number") {
+          setGameId(existingId);
 
-      if (
-        placement !== null &&
-        placement !== undefined
-      ) {
+          await loadTimeline(existingId);
 
-        setMessage(
-          `Riot match synced — Placement #${placement}`
-        );
+          setMessage(
+            `Active Game #${existingId} resumed.`
+          );
 
-      } else {
+          return;
+        }
+      }
 
-        setMessage(
-          "Riot match synced successfully."
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            data,
+            "Could not start game."
+          )
         );
       }
 
+      const newGame: Game =
+        data.game ?? data;
 
-    } catch (error) {
+      setGame(newGame);
+      setGameId(newGame.id);
+
+      setTimeline([]);
+      setCurrentEventId(null);
+      setCurrentEventType(null);
+      setRiotMatch(null);
+
+      setStage(2);
+      setRound(1);
 
       setMessage(
-
+        `Game #${newGame.id} started.`
+      );
+    } catch (error) {
+      setMessage(
         error instanceof Error
-
           ? error.message
+          : "Could not start game."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
 
-          : "Could not sync Riot match."
+  async function resumeActiveGame() {
+    if (!gameName.trim() || !tagLine.trim()) {
+      setMessage(
+        "Enter your Riot game name and tag line first."
+      );
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/games/active/${encodeURIComponent(
+          gameName.trim()
+        )}/${encodeURIComponent(tagLine.trim())}`
       );
 
+      const data = await response.json();
 
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            data,
+            "Could not check active game."
+          )
+        );
+      }
+
+      const activeGame: Game | null =
+        data.game ?? null;
+
+      if (!activeGame) {
+        setMessage("No active session found.");
+        return;
+      }
+
+      setGame(activeGame);
+      setGameId(activeGame.id);
+      setRiotMatch(null);
+
+      await loadTimeline(activeGame.id);
+
+      setMessage(
+        `Resumed Game #${activeGame.id}.`
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not resume game."
+      );
     } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createEvent(eventType: string) {
+    if (gameId === null) {
+      setMessage("Start or resume a game first.");
+      return;
+    }
+
+    if (game?.status !== "ACTIVE") {
+      setMessage(
+        "Events can only be added to an active game."
+      );
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/games/${gameId}/events`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            stage,
+            round,
+            event_type: eventType,
+
+            hp:
+              hp.trim() === ""
+                ? null
+                : Number(hp),
+
+            gold:
+              gold.trim() === ""
+                ? null
+                : Number(gold),
+
+            level:
+              level.trim() === ""
+                ? null
+                : Number(level),
+
+            streak_type:
+              streakType.trim() === ""
+                ? null
+                : streakType,
+
+            streak_length:
+              streakLength.trim() === ""
+                ? null
+                : Number(streakLength),
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      /*
+       * Duplicate event protection:
+       *
+       * If that exact event already exists during the
+       * same stage/round, resume the existing event
+       * instead of creating another one.
+       */
+      if (response.status === 409) {
+        const existingEventId =
+          data?.detail?.event_id ??
+          data?.event_id ??
+          null;
+
+        if (
+          typeof existingEventId === "number"
+        ) {
+          setCurrentEventId(existingEventId);
+          setCurrentEventType(eventType);
+
+          await loadTimeline(gameId);
+
+          setMessage(
+            `${displayLabel(
+              eventType
+            )} already exists at Stage ${stage}-${round}. Existing event resumed.`
+          );
+
+          return;
+        }
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            data,
+            "Could not record event."
+          )
+        );
+      }
+
+      const event: GameEvent =
+        data.event ?? data;
+
+      setCurrentEventId(event.id);
+      setCurrentEventType(event.event_type);
+
+      await loadTimeline(gameId);
+
+      setMessage(
+        `${displayLabel(
+          event.event_type
+        )} recorded at Stage ${stage}-${round}.`
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not record event."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function logDecision(
+    decisionType: string
+  ) {
+    if (gameId === null) {
+      setMessage("No active game.");
+      return;
+    }
+
+    if (currentEventId === null) {
+      setMessage(
+        "Record or select an event before adding a decision."
+      );
+      return;
+    }
+
+    if (game?.status !== "ACTIVE") {
+      setMessage(
+        "Decisions can only be recorded during an active game."
+      );
+      return;
+    }
+
+    /*
+     * Frontend duplicate protection.
+     */
+    if (
+      decisionsLoggedThisPhase.has(decisionType)
+    ) {
+      setMessage(
+        `${displayLabel(
+          decisionType
+        )} has already been recorded for Stage ${stage}-${round}.`
+      );
+      return;
+    }
+
+    const pendingKey = `${gameId}-${stage}-${round}-${decisionType}`;
+
+    /*
+     * Protect against rapid double-click.
+     */
+    if (
+      pendingDecisionKeys.current.has(pendingKey)
+    ) {
+      return;
+    }
+
+    pendingDecisionKeys.current.add(pendingKey);
+
+    setLoading(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/events/${currentEventId}/decisions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            decision_type: decisionType,
+            notes:
+              notes.trim() === ""
+                ? null
+                : notes.trim(),
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      /*
+       * Backend is the final authority.
+       *
+       * A 409 means this decision was already
+       * recorded during this phase.
+       */
+      if (response.status === 409) {
+        await loadTimeline(gameId);
+
+        setMessage(
+          getErrorMessage(
+            data,
+            `${displayLabel(
+              decisionType
+            )} has already been recorded for Stage ${stage}-${round}.`
+          )
+        );
+
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            data,
+            "Could not record decision."
+          )
+        );
+      }
+
+      setNotes("");
+
+      await loadTimeline(gameId);
+
+      setMessage(
+        `${displayLabel(
+          decisionType
+        )} recorded for Stage ${stage}-${round}.`
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not record decision."
+      );
+    } finally {
+      pendingDecisionKeys.current.delete(
+        pendingKey
+      );
 
       setLoading(false);
     }
   }
 
-
   async function abandonGame() {
-
-    if (
-      gameId === null
-    ) {
-
-      setMessage(
-        "No active game."
-      );
-
+    if (gameId === null) {
+      setMessage("No active game.");
       return;
     }
 
-
-    const confirmed =
-      window.confirm(
-        `Abandon Game #${gameId}?`
-      );
-
+    const confirmed = window.confirm(
+      `Abandon Game #${gameId}?`
+    );
 
     if (!confirmed) {
       return;
     }
 
-
     setLoading(true);
     setMessage("");
 
-
     try {
+      const response = await fetch(
+        `${API_URL}/api/games/${gameId}/abandon`,
+        {
+          method: "POST",
+        }
+      );
 
-      const response =
-        await fetch(
-          `${API_URL}/api/games/${gameId}/abandon`,
-          {
-            method: "POST"
-          }
-        );
-
-
-      const data =
-        await response.json();
-
+      const data = await response.json();
 
       if (!response.ok) {
-
         throw new Error(
-
-          typeof data.detail ===
-          "string"
-
-            ? data.detail
-
-            : JSON.stringify(
-                data.detail ??
-                data
-              )
+          getErrorMessage(
+            data,
+            "Could not abandon session."
+          )
         );
       }
-
 
       setGameId(null);
       setGame(null);
       setTimeline([]);
       setCurrentEventId(null);
+      setCurrentEventType(null);
       setRiotMatch(null);
-
 
       setMessage(
         "Session abandoned. You can start a new game."
       );
-
-
     } catch (error) {
-
       setMessage(
-
         error instanceof Error
-
           ? error.message
-
           : "Could not abandon session."
       );
-
-
     } finally {
-
       setLoading(false);
     }
   }
 
+  async function syncRiotResult() {
+    if (gameId === null) {
+      setMessage("No game to sync.");
+      return;
+    }
 
-  function newSession() {
+    setLoading(true);
+    setMessage("");
 
+    try {
+      const response = await fetch(
+        `${API_URL}/api/games/${gameId}/sync-riot`,
+        {
+          method: "POST",
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          getErrorMessage(
+            data,
+            "Could not sync Riot result."
+          )
+        );
+      }
+
+      if (data.game) {
+        setGame(data.game);
+      }
+
+      if (data.riot_match) {
+        setRiotMatch(data.riot_match);
+      }
+
+      await loadTimeline(gameId);
+
+      setMessage(
+        data.message ??
+          "Official Riot result synced."
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not sync Riot result."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function resetForNewSession() {
     setGameId(null);
     setGame(null);
+
     setTimeline([]);
+
     setCurrentEventId(null);
+    setCurrentEventType(null);
+
     setRiotMatch(null);
 
-    setStage("2");
-    setRound("1");
+    setStage(2);
+    setRound(1);
 
     setHp("");
     setGold("");
     setLevel("");
+    setStreakType("");
     setStreakLength("");
     setNotes("");
 
     setMessage("");
   }
 
-
   return (
+    <main className="min-h-screen bg-zinc-950 px-4 py-8 text-zinc-100">
+      <div className="mx-auto max-w-6xl">
+        {/* HEADER */}
 
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
-
-      <div className="mx-auto max-w-5xl px-5 py-10">
-
-
-        <header className="mb-10">
-
-          <div className="flex flex-wrap items-start justify-between gap-5">
-
+        <header className="mb-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-
-              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-violet-400">
-                Behavioral Analytics
-              </p>
-
-              <h1 className="mt-2 text-4xl font-bold">
+              <h1 className="text-3xl font-bold">
                 TFT Decision Lab
               </h1>
 
-              <p className="mt-3 max-w-2xl text-zinc-400">
-                Track how you respond when game
-                conditions change and connect your
-                decisions to real TFT results.
+              <p className="mt-2 text-sm text-zinc-400">
+                Track decisions, review behavior,
+                and connect choices to actual TFT
+                outcomes.
               </p>
-
             </div>
 
-
-            <nav className="flex flex-wrap gap-2">
-
+            <nav className="flex gap-2">
               <Link
                 href="/"
-                className="rounded-lg border border-violet-500 px-4 py-2"
+                className="rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm"
               >
                 Logger
               </Link>
 
               <Link
                 href="/history"
-                className="rounded-lg border border-zinc-700 px-4 py-2 hover:border-violet-500"
+                className="rounded-xl border border-zinc-800 px-4 py-2 text-sm transition hover:border-zinc-600"
               >
                 History
               </Link>
 
               <Link
                 href="/analytics"
-                className="rounded-lg border border-zinc-700 px-4 py-2 hover:border-violet-500"
+                className="rounded-xl border border-zinc-800 px-4 py-2 text-sm transition hover:border-zinc-600"
               >
                 Analytics
               </Link>
-
             </nav>
-
           </div>
-
         </header>
 
+        {/* RIOT ID */}
 
-        {gameId === null && (
+        <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+          <h2 className="text-lg font-semibold">
+            Riot ID
+          </h2>
 
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-            <h2 className="text-2xl font-semibold">
-              Start Game
-            </h2>
-
-            <p className="mt-2 text-sm text-zinc-500">
-              Enter your Riot ID and choose your opening intention.
-            </p>
-
-
-            <div className="mt-6 grid gap-4 md:grid-cols-2">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm text-zinc-400">
+                Game Name
+              </label>
 
               <input
                 value={gameName}
-                onChange={
-                  event =>
-                    setGameName(
-                      event.target.value
-                    )
+                onChange={(event) =>
+                  setGameName(
+                    event.target.value
+                  )
                 }
-                placeholder="Riot Game Name"
-                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3"
+                placeholder="Asurason"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none focus:border-zinc-500"
               />
+            </div>
 
+            <div>
+              <label className="mb-1 block text-sm text-zinc-400">
+                Tag Line
+              </label>
 
               <input
                 value={tagLine}
-                onChange={
-                  event =>
-                    setTagLine(
-                      event.target.value
-                    )
+                onChange={(event) =>
+                  setTagLine(
+                    event.target.value
+                  )
                 }
                 placeholder="JP1"
-                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3"
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none focus:border-zinc-500"
               />
-
             </div>
+          </div>
 
-
+          {!game && (
             <button
-              onClick={
-                resumeActiveGame
-              }
+              onClick={resumeActiveGame}
               disabled={loading}
-              className="mt-4 rounded-xl border border-zinc-700 px-5 py-3 text-sm hover:border-violet-500 disabled:opacity-50"
+              className="mt-4 rounded-xl border border-zinc-700 px-4 py-2 text-sm transition hover:border-zinc-500 disabled:opacity-50"
             >
               Resume Active Game
             </button>
+          )}
+        </section>
 
+        {/* START GAME */}
 
-            <h3 className="mt-8 text-xl font-semibold">
-              What&apos;s your plan?
-            </h3>
+        {!game && (
+          <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <h2 className="text-lg font-semibold">
+              Opening Intent
+            </h2>
 
+            <p className="mt-1 text-sm text-zinc-400">
+              What is your intended approach at
+              the beginning of this game?
+            </p>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-
-              {strategies.map(
-                strategy => (
-
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {INITIAL_STRATEGIES.map(
+                (strategy) => (
                   <button
-                    key={strategy.value}
-                    disabled={loading}
+                    key={strategy}
                     onClick={() =>
-                      startGame(
-                        strategy.value
-                      )
+                      startGame(strategy)
                     }
-                    className="rounded-xl border border-zinc-700 bg-zinc-800 p-5 text-left text-lg font-semibold hover:border-violet-500 hover:bg-zinc-700 disabled:opacity-50"
+                    disabled={loading}
+                    className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm font-medium transition hover:border-zinc-500 disabled:opacity-50"
                   >
-                    {strategy.label}
+                    {displayLabel(strategy)}
                   </button>
-
                 )
               )}
-
             </div>
-
           </section>
-
         )}
 
+        {/* CURRENT SESSION */}
 
-        {gameId !== null && (
+        {game && (
+          <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  Current Session
+                </h2>
 
-          <>
-
-            <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-              <div className="flex flex-wrap items-center justify-between gap-4">
-
-                <div>
-
-                  <p className="text-sm text-zinc-400">
-                    Current Session
+                <div className="mt-3 space-y-1 text-sm">
+                  <p>
+                    <span className="text-zinc-500">
+                      Game:
+                    </span>{" "}
+                    #{game.id}
                   </p>
 
-                  <h2 className="text-2xl font-bold">
-                    Game #{gameId}
-                  </h2>
+                  <p>
+                    <span className="text-zinc-500">
+                      Intent:
+                    </span>{" "}
+                    {displayLabel(
+                      game.initial_strategy
+                    )}
+                  </p>
 
+                  <p>
+                    <span className="text-zinc-500">
+                      Status:
+                    </span>{" "}
+                    {game.status}
+                  </p>
+
+                  {game.placement != null && (
+                    <p>
+                      <span className="text-zinc-500">
+                        Placement:
+                      </span>{" "}
+                      #{game.placement}
+                    </p>
+                  )}
                 </div>
-
-
-                {game && (
-
-                  <div className="text-right">
-
-                    <p className="font-semibold text-violet-300">
-                      {prettyName(
-                        game.initial_strategy
-                      )}
-                    </p>
-
-                    <p className="text-sm text-zinc-400">
-                      {game.status}
-                    </p>
-
-                  </div>
-
-                )}
-
               </div>
 
-
-              {game?.status === "ACTIVE" && (
-
-                <button
-                  onClick={abandonGame}
-                  disabled={loading}
-                  className="mt-5 rounded-xl border border-red-900 px-4 py-2 text-sm text-red-400 hover:border-red-500 disabled:opacity-50"
-                >
-                  Abandon Session
-                </button>
-
-              )}
-
-            </section>
-
-
-            {game?.status !== "COMPLETED" &&
-             game?.status !== "ABANDONED" && (
-
-              <>
-
-                <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-                  <h2 className="text-xl font-semibold">
-                    Game State
-                  </h2>
-
-
-                  <p className="mb-2 mt-5 text-sm text-zinc-400">
-                    Stage
-                  </p>
-
-
-                  <div className="flex flex-wrap gap-2">
-
-                    {[2, 3, 4, 5, 6].map(
-                      stageNumber => (
-
-                        <button
-                          key={stageNumber}
-                          onClick={() => {
-
-                            setStage(
-                              String(
-                                stageNumber
-                              )
-                            );
-
-                            setRound("1");
-
-                            setCurrentEventId(
-                              null
-                            );
-
-                          }}
-                          className={
-                            stage ===
-                            String(stageNumber)
-
-                              ? "rounded-lg bg-violet-600 px-4 py-2 font-semibold"
-
-                              : "rounded-lg border border-zinc-700 bg-zinc-950 px-4 py-2"
-                          }
-                        >
-                          Stage {stageNumber}
-                        </button>
-
-                      )
-                    )}
-
-                  </div>
-
-
-                  <p className="mb-2 mt-5 text-sm text-zinc-400">
-                    Round
-                  </p>
-
-
-                  <div className="flex flex-wrap gap-2">
-
-                    {roundsByStage[
-                      Number(stage)
-                    ]?.map(
-                      roundNumber => (
-
-                        <button
-                          key={roundNumber}
-                          onClick={() => {
-
-                            setRound(
-                              String(
-                                roundNumber
-                              )
-                            );
-
-                            setCurrentEventId(
-                              null
-                            );
-
-                          }}
-                          className={
-                            round ===
-                            String(roundNumber)
-
-                              ? "rounded-lg bg-amber-600 px-4 py-2 font-semibold"
-
-                              : "rounded-lg border border-zinc-700 bg-zinc-950 px-4 py-2"
-                          }
-                        >
-                          {stage}-{roundNumber}
-                        </button>
-
-                      )
-                    )}
-
-                  </div>
-
-
-                  <div className="mt-7">
-
-                    <p className="text-sm font-medium text-zinc-300">
-                      Optional Context
-                    </p>
-
-                    <p className="mt-1 text-xs text-zinc-500">
-                      Skip these if you need to log quickly.
-                    </p>
-
-
-                    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-
-                      <input
-                        type="number"
-                        value={hp}
-                        onChange={
-                          event =>
-                            setHp(
-                              event.target.value
-                            )
-                        }
-                        placeholder="HP"
-                        className="rounded-xl border border-zinc-700 bg-zinc-950 p-3"
-                      />
-
-                      <input
-                        type="number"
-                        value={gold}
-                        onChange={
-                          event =>
-                            setGold(
-                              event.target.value
-                            )
-                        }
-                        placeholder="Gold"
-                        className="rounded-xl border border-zinc-700 bg-zinc-950 p-3"
-                      />
-
-                      <input
-                        type="number"
-                        value={level}
-                        onChange={
-                          event =>
-                            setLevel(
-                              event.target.value
-                            )
-                        }
-                        placeholder="Level"
-                        className="rounded-xl border border-zinc-700 bg-zinc-950 p-3"
-                      />
-
-                      <input
-                        type="number"
-                        value={streakLength}
-                        onChange={
-                          event =>
-                            setStreakLength(
-                              event.target.value
-                            )
-                        }
-                        placeholder="Streak"
-                        className="rounded-xl border border-zinc-700 bg-zinc-950 p-3"
-                      />
-
-                    </div>
-
-                  </div>
-
-                </section>
-
-
-                <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-                  <h2 className="text-xl font-semibold">
-                    What happened?
-                  </h2>
-
-                  <p className="mt-1 text-sm text-zinc-500">
-                    Current round: {stage}-{round}
-                  </p>
-
-
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-
-                    {eventTypes.map(
-                      eventType => (
-
-                        <button
-                          key={eventType}
-                          disabled={loading}
-                          onClick={() =>
-                            createEvent(
-                              eventType
-                            )
-                          }
-                          className="rounded-xl border border-zinc-700 bg-zinc-800 p-4 text-left hover:border-amber-500 disabled:opacity-50"
-                        >
-                          {prettyName(
-                            eventType
-                          )}
-                        </button>
-
-                      )
-                    )}
-
-                  </div>
-
-                </section>
-
-
-                <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-                  <h2 className="text-xl font-semibold">
-                    What did you do?
-                  </h2>
-
-
-                  {currentEventId === null ? (
-
-                    <p className="mt-2 text-sm text-zinc-500">
-                      Record what happened first.
-                    </p>
-
-                  ) : (
-
-                    <p className="mt-2 text-sm text-emerald-400">
-                      Event selected. You can add multiple decisions.
-                    </p>
-
-                  )}
-
-
-                  <textarea
-                    value={notes}
-                    onChange={
-                      event =>
-                        setNotes(
-                          event.target.value
-                        )
-                    }
-                    placeholder="Optional note..."
-                    className="mt-4 min-h-20 w-full rounded-xl border border-zinc-700 bg-zinc-950 p-3"
-                  />
-
-
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-
-                    {decisionTypes.map(
-                      decisionType => (
-
-                        <button
-                          key={decisionType}
-                          disabled={
-                            loading ||
-                            currentEventId === null
-                          }
-                          onClick={() =>
-                            createDecision(
-                              decisionType
-                            )
-                          }
-                          className="rounded-xl border border-zinc-700 bg-zinc-800 p-4 text-left hover:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {prettyName(
-                            decisionType
-                          )}
-                        </button>
-
-                      )
-                    )}
-
-                  </div>
-
-                </section>
-
-
-                <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-                  <h2 className="text-xl font-semibold">
-                    Game Finished?
-                  </h2>
-
-                  <p className="mt-2 text-sm text-zinc-400">
-                    After the TFT match ends, sync the official Riot result.
-                  </p>
-
-
+              <div className="flex flex-wrap gap-2">
+                {game.status === "ACTIVE" && (
+                  <>
+                    <button
+                      onClick={syncRiotResult}
+                      disabled={loading}
+                      className="rounded-xl border border-emerald-800 px-4 py-2 text-sm text-emerald-300 transition hover:border-emerald-500 disabled:opacity-50"
+                    >
+                      Sync Riot Result
+                    </button>
+
+                    <button
+                      onClick={abandonGame}
+                      disabled={loading}
+                      className="rounded-xl border border-red-900 px-4 py-2 text-sm text-red-400 transition hover:border-red-500 disabled:opacity-50"
+                    >
+                      Abandon Session
+                    </button>
+                  </>
+                )}
+
+                {game.status !== "ACTIVE" && (
                   <button
                     onClick={
-                      syncRiotResult
+                      resetForNewSession
                     }
-                    disabled={loading}
-                    className="mt-4 rounded-xl bg-violet-600 px-6 py-3 font-semibold hover:bg-violet-500 disabled:opacity-50"
+                    className="rounded-xl border border-zinc-700 px-4 py-2 text-sm transition hover:border-zinc-500"
                   >
-                    {loading
-                      ? "Checking Riot..."
-                      : "Sync Riot Result"}
+                    New Session
                   </button>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
-                </section>
+        {/* LOGGER */}
 
-              </>
+        {game?.status === "ACTIVE" && (
+          <>
+            {/* STAGE / ROUND */}
 
-            )}
+            <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+              <h2 className="text-lg font-semibold">
+                Phase
+              </h2>
 
+              <div className="mt-4">
+                <p className="mb-2 text-sm text-zinc-400">
+                  Stage
+                </p>
 
-            <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
+                <div className="flex flex-wrap gap-2">
+                  {STAGES.map(
+                    (stageNumber) => (
+                      <button
+                        key={stageNumber}
+                        onClick={() => {
+                          setStage(
+                            stageNumber
+                          );
 
-              <div className="flex flex-wrap items-center justify-between gap-4">
+                          setCurrentEventId(
+                            null
+                          );
 
-                <h2 className="text-xl font-semibold">
+                          setCurrentEventType(
+                            null
+                          );
+                        }}
+                        className={`rounded-xl border px-4 py-2 ${
+                          stage ===
+                          stageNumber
+                            ? "border-zinc-300 bg-zinc-100 text-zinc-950"
+                            : "border-zinc-700 bg-zinc-950 hover:border-zinc-500"
+                        }`}
+                      >
+                        {stageNumber}
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <p className="mb-2 text-sm text-zinc-400">
+                  Round
+                </p>
+
+                <div className="flex flex-wrap gap-2">
+                  {ROUNDS.map(
+                    (roundNumber) => (
+                      <button
+                        key={roundNumber}
+                        onClick={() => {
+                          setRound(
+                            roundNumber
+                          );
+
+                          setCurrentEventId(
+                            null
+                          );
+
+                          setCurrentEventType(
+                            null
+                          );
+                        }}
+                        className={`rounded-xl border px-4 py-2 ${
+                          round ===
+                          roundNumber
+                            ? "border-zinc-300 bg-zinc-100 text-zinc-950"
+                            : "border-zinc-700 bg-zinc-950 hover:border-zinc-500"
+                        }`}
+                      >
+                        {roundNumber}
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-5 rounded-xl bg-zinc-950 p-4">
+                <p className="text-sm text-zinc-400">
+                  Selected phase
+                </p>
+
+                <p className="mt-1 text-2xl font-semibold">
+                  {stage}-{round}
+                </p>
+              </div>
+            </section>
+
+            {/* OPTIONAL STATE */}
+
+            <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+              <h2 className="text-lg font-semibold">
+                Game State
+              </h2>
+
+              <p className="mt-1 text-sm text-zinc-400">
+                Optional context for this event.
+              </p>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <input
+                  type="number"
+                  value={hp}
+                  onChange={(event) =>
+                    setHp(event.target.value)
+                  }
+                  placeholder="HP"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none"
+                />
+
+                <input
+                  type="number"
+                  value={gold}
+                  onChange={(event) =>
+                    setGold(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Gold"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none"
+                />
+
+                <input
+                  type="number"
+                  value={level}
+                  onChange={(event) =>
+                    setLevel(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Level"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none"
+                />
+              </div>
+
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <select
+                  value={streakType}
+                  onChange={(event) =>
+                    setStreakType(
+                      event.target.value
+                    )
+                  }
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none"
+                >
+                  <option value="">
+                    No streak
+                  </option>
+                  <option value="WIN">
+                    Win Streak
+                  </option>
+                  <option value="LOSE">
+                    Lose Streak
+                  </option>
+                </select>
+
+                <input
+                  type="number"
+                  value={streakLength}
+                  onChange={(event) =>
+                    setStreakLength(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Streak length"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none"
+                />
+              </div>
+            </section>
+
+            {/* EVENT */}
+
+            <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+              <h2 className="text-lg font-semibold">
+                What happened?
+              </h2>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {EVENT_TYPES.map(
+                  (eventType) => (
+                    <button
+                      key={eventType}
+                      onClick={() =>
+                        createEvent(
+                          eventType
+                        )
+                      }
+                      disabled={loading}
+                      className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm transition hover:border-zinc-500 disabled:opacity-50"
+                    >
+                      {displayLabel(
+                        eventType
+                      )}
+                    </button>
+                  )
+                )}
+              </div>
+
+              {currentEventId !== null && (
+                <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm">
+                  <span className="text-zinc-500">
+                    Selected event:
+                  </span>{" "}
+                  {currentEventType
+                    ? displayLabel(
+                        currentEventType
+                      )
+                    : `#${currentEventId}`}
+                </div>
+              )}
+            </section>
+
+            {/* DECISION */}
+
+            <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+              <h2 className="text-lg font-semibold">
+                What did you decide?
+              </h2>
+
+              {currentEventId === null && (
+                <p className="mt-2 text-sm text-amber-400">
+                  Select an event first.
+                </p>
+              )}
+
+              <div className="mt-4">
+                <label className="mb-2 block text-sm text-zinc-400">
+                  Notes
+                </label>
+
+                <textarea
+                  value={notes}
+                  onChange={(event) =>
+                    setNotes(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Optional note..."
+                  rows={3}
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none"
+                />
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {DECISION_TYPES.map(
+                  (decisionType) => {
+                    const alreadyLogged =
+                      decisionsLoggedThisPhase.has(
+                        decisionType
+                      );
+
+                    return (
+                      <button
+                        key={
+                          decisionType
+                        }
+                        onClick={() =>
+                          logDecision(
+                            decisionType
+                          )
+                        }
+                        disabled={
+                          loading ||
+                          currentEventId ===
+                            null ||
+                          alreadyLogged
+                        }
+                        className={`rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                          alreadyLogged
+                            ? "cursor-not-allowed border-emerald-900 bg-emerald-950/30 text-emerald-500"
+                            : "border-zinc-700 bg-zinc-950 hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        }`}
+                      >
+                        {alreadyLogged
+                          ? `${displayLabel(
+                              decisionType
+                            )} ✓`
+                          : displayLabel(
+                              decisionType
+                            )}
+                      </button>
+                    );
+                  }
+                )}
+              </div>
+
+              <p className="mt-4 text-xs text-zinc-500">
+                Each decision type can only
+                be recorded once during the
+                same Stage + Round.
+              </p>
+            </section>
+          </>
+        )}
+
+        {/* MESSAGE */}
+
+        {message && (
+          <section className="mb-6 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm">
+            {message}
+          </section>
+        )}
+
+        {/* OFFICIAL RIOT RESULT */}
+
+        {riotMatch && (
+          <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <h2 className="text-lg font-semibold">
+              Official Riot Result
+            </h2>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl bg-zinc-950 p-4">
+                <p className="text-xs text-zinc-500">
+                  Placement
+                </p>
+
+                <p className="mt-1 text-2xl font-semibold">
+                  {riotMatch.placement != null
+                    ? `#${riotMatch.placement}`
+                    : "—"}
+                </p>
+              </div>
+
+              <div className="rounded-xl bg-zinc-950 p-4">
+                <p className="text-xs text-zinc-500">
+                  Result
+                </p>
+
+                <p className="mt-1 font-semibold">
+                  {riotMatch.win
+                    ? "Win"
+                    : riotMatch.top4
+                    ? "Top 4"
+                    : "Bottom 4"}
+                </p>
+              </div>
+
+              <div className="rounded-xl bg-zinc-950 p-4">
+                <p className="text-xs text-zinc-500">
+                  Level
+                </p>
+
+                <p className="mt-1 text-xl font-semibold">
+                  {riotMatch.level ??
+                    "—"}
+                </p>
+              </div>
+
+              <div className="rounded-xl bg-zinc-950 p-4">
+                <p className="text-xs text-zinc-500">
+                  Last Round
+                </p>
+
+                <p className="mt-1 text-xl font-semibold">
+                  {riotMatch.last_round ??
+                    "—"}
+                </p>
+              </div>
+            </div>
+
+            {riotMatch.units &&
+              riotMatch.units.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="font-semibold">
+                    Final Board
+                  </h3>
+
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {riotMatch.units.map(
+                      (unit, index) => {
+                        const unitName =
+                          unit.name ??
+                          unit.character_id ??
+                          `Unit ${
+                            index + 1
+                          }`;
+
+                        const items =
+                          unit.itemNames ??
+                          unit.item_names ??
+                          [];
+
+                        return (
+                          <div
+                            key={`${unitName}-${index}`}
+                            className="rounded-xl border border-zinc-800 bg-zinc-950 p-3"
+                          >
+                            <p className="font-medium">
+                              {unitName}
+                            </p>
+
+                            {unit.tier !=
+                              null && (
+                              <p className="mt-1 text-sm text-zinc-400">
+                                {unit.tier}★
+                              </p>
+                            )}
+
+                            {items.length >
+                              0 && (
+                              <div className="mt-2 text-xs text-zinc-500">
+                                {items.join(
+                                  ", "
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+                    )}
+                  </div>
+                </div>
+              )}
+
+            {riotMatch.traits &&
+              riotMatch.traits.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="font-semibold">
+                    Traits
+                  </h3>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {riotMatch.traits.map(
+                      (trait, index) => (
+                        <div
+                          key={`${trait.name}-${index}`}
+                          className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm"
+                        >
+                          {trait.name ??
+                            "Unknown Trait"}
+
+                          {trait.num_units !=
+                            null &&
+                            ` (${trait.num_units})`}
+                        </div>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+          </section>
+        )}
+
+        {/* TIMELINE */}
+
+        {game && (
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">
                   Decision Timeline
                 </h2>
 
-
-                {game?.placement !== null &&
-                 game?.placement !== undefined && (
-
-                  <div className="text-right">
-
-                    <p className="text-2xl font-bold">
-                      #{game.placement}
-                    </p>
-
-                    <p className="text-sm text-zinc-400">
-                      {game.win
-                        ? "WIN"
-                        : game.top4
-                        ? "Top 4"
-                        : "Bottom 4"}
-                    </p>
-
-                  </div>
-
-                )}
-
+                <p className="mt-1 text-sm text-zinc-400">
+                  Game #{game.id}
+                </p>
               </div>
 
-
-              {timeline.length === 0 ? (
-
-                <p className="mt-5 text-zinc-500">
-                  No decisions yet.
-                </p>
-
-              ) : (
-
-                <div className="mt-6 space-y-4">
-
-                  {timeline.map(
-                    entry => (
-
-                      <div
-                        key={entry.event.id}
-                        className="rounded-xl border border-zinc-800 bg-zinc-950 p-4"
-                      >
-
-                        <div className="flex flex-wrap justify-between gap-4">
-
-                          <div>
-
-                            <p className="font-bold">
-                              Stage {entry.event.stage}-{entry.event.round}
-                            </p>
-
-                            <p className="mt-1 text-amber-300">
-                              {prettyName(
-                                entry.event.event_type
-                              )}
-                            </p>
-
-                          </div>
-
-
-                          <div className="text-right text-sm text-zinc-500">
-
-                            {entry.event.hp !== null && (
-                              <div>
-                                HP {entry.event.hp}
-                              </div>
-                            )}
-
-                            {entry.event.gold !== null && (
-                              <div>
-                                Gold {entry.event.gold}
-                              </div>
-                            )}
-
-                            {entry.event.level !== null && (
-                              <div>
-                                Level {entry.event.level}
-                              </div>
-                            )}
-
-                            {entry.event.streak_length !== null && (
-                              <div>
-                                Streak {entry.event.streak_length}
-                              </div>
-                            )}
-
-                          </div>
-
-                        </div>
-
-
-                        <div className="mt-4 space-y-2">
-
-                          {entry.decisions.length === 0 && (
-
-                            <p className="text-sm text-zinc-600">
-                              No response logged.
-                            </p>
-
-                          )}
-
-
-                          {entry.decisions.map(
-                            decision => (
-
-                              <div
-                                key={decision.id}
-                                className="rounded-lg bg-zinc-900 px-3 py-3"
-                              >
-
-                                <p>
-
-                                  <span className="mr-2 text-zinc-500">
-                                    #{decision.sequence_order}
-                                  </span>
-
-                                  <span className="font-medium">
-                                    {prettyName(
-                                      decision.decision_type
-                                    )}
-                                  </span>
-
-                                </p>
-
-
-                                {decision.notes && (
-
-                                  <p className="mt-1 text-sm text-zinc-500">
-                                    {decision.notes}
-                                  </p>
-
-                                )}
-
-                              </div>
-
-                            )
-                          )}
-
-                        </div>
-
-                      </div>
-
-                    )
-                  )}
-
-                </div>
-
-              )}
-
-            </section>
-
-
-            {riotMatch && (
-
-              <section className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-                <div className="flex flex-wrap justify-between gap-4">
-
-                  <div>
-
-                    <p className="text-sm text-zinc-500">
-                      Official Riot Result
-                    </p>
-
-                    <h2 className="mt-1 text-4xl font-bold">
-                      #{riotMatch.placement}
-                    </h2>
-
-                  </div>
-
-
-                  <div className="text-right">
-
-                    <p className="font-semibold">
-                      {riotMatch.win
-                        ? "WIN"
-                        : riotMatch.top4
-                        ? "Top 4"
-                        : "Bottom 4"}
-                    </p>
-
-                    <p className="mt-1 text-sm text-zinc-500">
-                      Level {riotMatch.level ?? "—"}
-                    </p>
-
-                    <p className="text-sm text-zinc-500">
-                      Last Round {riotMatch.last_round ?? "—"}
-                    </p>
-
-                  </div>
-
-                </div>
-
-
-                <h3 className="mt-7 text-lg font-semibold">
-                  Final Board
-                </h3>
-
-
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-
-                  {riotMatch.units.map(
-                    (unit, index) => (
-
-                      <div
-                        key={`${unit.character_id}-${index}`}
-                        className="rounded-xl border border-zinc-800 bg-zinc-950 p-4"
-                      >
-
-                        <p className="font-medium">
-                          {unit.character_id ?? "Unknown Unit"}
-                        </p>
-
-                        <p className="mt-1 text-sm text-zinc-500">
-                          {unit.tier ?? "?"}★
-                        </p>
-
-                        {unit.items.length > 0 && (
-
-                          <p className="mt-2 break-words text-xs text-zinc-500">
-                            Items: {unit.items.join(", ")}
+              <button
+                onClick={() => {
+                  if (
+                    gameId !== null
+                  ) {
+                    loadTimeline(
+                      gameId
+                    );
+                  }
+                }}
+                disabled={loading}
+                className="rounded-xl border border-zinc-700 px-3 py-2 text-sm transition hover:border-zinc-500 disabled:opacity-50"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {timeline.length === 0 ? (
+              <p className="mt-5 text-sm text-zinc-500">
+                No events recorded yet.
+              </p>
+            ) : (
+              <div className="mt-5 space-y-4">
+                {timeline.map(
+                  (entry) => (
+                    <div
+                      key={
+                        entry.event.id
+                      }
+                      className="rounded-xl border border-zinc-800 bg-zinc-950 p-4"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                            Stage{" "}
+                            {
+                              entry
+                                .event
+                                .stage
+                            }
+                            -
+                            {
+                              entry
+                                .event
+                                .round
+                            }
                           </p>
 
-                        )}
+                          <p className="mt-1 font-semibold">
+                            {displayLabel(
+                              entry
+                                .event
+                                .event_type
+                            )}
+                          </p>
+                        </div>
 
+                        <button
+                          onClick={() => {
+                            setStage(
+                              entry
+                                .event
+                                .stage
+                            );
+
+                            setRound(
+                              entry
+                                .event
+                                .round
+                            );
+
+                            setCurrentEventId(
+                              entry
+                                .event
+                                .id
+                            );
+
+                            setCurrentEventType(
+                              entry
+                                .event
+                                .event_type
+                            );
+                          }}
+                          disabled={
+                            game.status !==
+                            "ACTIVE"
+                          }
+                          className="rounded-lg border border-zinc-800 px-3 py-1 text-xs text-zinc-400 hover:border-zinc-600 disabled:opacity-30"
+                        >
+                          Select
+                        </button>
                       </div>
 
-                    )
-                  )}
+                      {(entry.event.hp !=
+                        null ||
+                        entry.event
+                          .gold !=
+                          null ||
+                        entry.event
+                          .level !=
+                          null) && (
+                        <div className="mt-3 flex flex-wrap gap-3 text-xs text-zinc-500">
+                          {entry.event.hp !=
+                            null && (
+                            <span>
+                              HP{" "}
+                              {
+                                entry
+                                  .event
+                                  .hp
+                              }
+                            </span>
+                          )}
 
-                </div>
+                          {entry.event.gold !=
+                            null && (
+                            <span>
+                              Gold{" "}
+                              {
+                                entry
+                                  .event
+                                  .gold
+                              }
+                            </span>
+                          )}
 
+                          {entry.event.level !=
+                            null && (
+                            <span>
+                              Level{" "}
+                              {
+                                entry
+                                  .event
+                                  .level
+                              }
+                            </span>
+                          )}
+                        </div>
+                      )}
 
-                <h3 className="mt-7 text-lg font-semibold">
-                  Traits
-                </h3>
+                      <div className="mt-4 space-y-2">
+                        {entry.decisions
+                          .length ===
+                        0 ? (
+                          <p className="text-sm text-zinc-600">
+                            No decisions
+                            recorded.
+                          </p>
+                        ) : (
+                          [...entry.decisions]
+                            .sort(
+                              (
+                                a,
+                                b
+                              ) =>
+                                a.sequence_order -
+                                b.sequence_order
+                            )
+                            .map(
+                              (
+                                decision
+                              ) => (
+                                <div
+                                  key={
+                                    decision.id
+                                  }
+                                  className="rounded-lg border border-zinc-800 px-3 py-2"
+                                >
+                                  <div className="flex gap-2 text-sm">
+                                    <span className="text-zinc-500">
+                                      #
+                                      {
+                                        decision.sequence_order
+                                      }
+                                    </span>
 
+                                    <span className="font-medium">
+                                      {displayLabel(
+                                        decision.decision_type
+                                      )}
+                                    </span>
+                                  </div>
 
-                <div className="mt-3 flex flex-wrap gap-2">
-
-                  {riotMatch.traits.map(
-                    (trait, index) => (
-
-                      <span
-                        key={`${trait.name}-${index}`}
-                        className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm"
-                      >
-                        {trait.name ?? "Unknown Trait"}
-
-                        {trait.num_units !== null &&
-                          ` · ${trait.num_units}`}
-                      </span>
-
-                    )
-                  )}
-
-                </div>
-
-              </section>
-
+                                  {decision.notes && (
+                                    <p className="mt-1 text-xs text-zinc-500">
+                                      {
+                                        decision.notes
+                                      }
+                                    </p>
+                                  )}
+                                </div>
+                              )
+                            )
+                        )}
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
             )}
-
-
-            {game?.status === "COMPLETED" && (
-
-              <section className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-
-                <h2 className="text-xl font-semibold">
-                  Ready for another game?
-                </h2>
-
-                <button
-                  onClick={newSession}
-                  className="mt-4 rounded-xl bg-zinc-100 px-6 py-3 font-semibold text-zinc-950 hover:bg-white"
-                >
-                  Start New Session
-                </button>
-
-              </section>
-
-            )}
-
-          </>
-
+          </section>
         )}
-
-
-        {message && (
-
-          <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-300">
-            {message}
-          </div>
-
-        )}
-
       </div>
-
     </main>
   );
 }
