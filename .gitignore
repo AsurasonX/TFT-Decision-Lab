@@ -11,3 +11,7 @@ frontend/.vercel/
 
 .DS_Store
 Thumbs.db
+
+# Local TFT capture calibration
+companion/config.json
+companion/stage_region_preview.png

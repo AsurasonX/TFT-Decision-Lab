@@ -58,6 +58,9 @@ from backend.app.sync_service import (
     sync_game_with_riot
 )
 
+from pydantic import BaseModel, Field
+
+
 
 # ==========================================
 # ENVIRONMENT
@@ -139,6 +142,17 @@ def on_startup():
 
     create_db_and_tables()
 
+# -----------------------------
+# LIVE PHASE TEMPORARY STATE
+# -----------------------------
+
+class LivePhaseUpdate(BaseModel):
+    stage: int = Field(ge=1, le=9)
+    round: int = Field(ge=1, le=9)
+    source: str = "SCREEN_CAPTURE"
+
+
+live_phase_store: dict[int, dict] = {}
 
 # ==========================================
 # BASIC
@@ -933,6 +947,66 @@ def sync_riot_match(
         session,
         game_id
     )
+
+
+# ==========================================
+# LIVE PHASE
+# ==========================================
+
+@app.post("/api/games/{game_id}/live-phase")
+def update_live_phase(
+    game_id: int,
+    request: LivePhaseUpdate,
+    session: Session = Depends(get_session),
+):
+    game = session.get(Game, game_id)
+
+    if not game:
+        raise HTTPException(
+            status_code=404,
+            detail="Game not found.",
+        )
+
+    if game.status != "ACTIVE":
+        raise HTTPException(
+            status_code=400,
+            detail="Game is not active.",
+        )
+
+    state = {
+        "game_id": game_id,
+        "stage": request.stage,
+        "round": request.round,
+        "source": request.source,
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+
+    live_phase_store[game_id] = state
+
+    return {
+        "live_state": state,
+    }
+
+
+@app.get("/api/games/{game_id}/live-phase")
+def get_live_phase(
+    game_id: int,
+    session: Session = Depends(get_session),
+):
+    game = session.get(Game, game_id)
+
+    if not game:
+        raise HTTPException(
+            status_code=404,
+            detail="Game not found.",
+        )
+
+    return {
+        "live_state":
+            live_phase_store.get(game_id),
+    }
 
 
 # ==========================================
